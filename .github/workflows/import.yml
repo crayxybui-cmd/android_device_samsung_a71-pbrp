@@ -1,0 +1,24 @@
+name: Import Device Tree
+
+on:
+  workflow_dispatch:
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Own Repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clone and Copy Files
+        run: |
+          git config --global user.name "crayxybui-cmd"
+          git config --global user.email "crayxybui-cmd@://github.com"
+          git clone https://github.com temp_tree
+          cp -r temp_tree/* .
+          rm -rf temp_tree
+          git add .
+          git commit -m "Import A71 device tree from pascua28"
+          git push origin main
