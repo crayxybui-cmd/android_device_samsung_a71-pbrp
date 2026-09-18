@@ -1,24 +1,157 @@
-name: Import Device Tree
+name: PBRP Recovery Build for Samsung A71
 
 on:
   workflow_dispatch:
 
-jobs:
-  import:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Own Repo
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+# Tüm ayarları buradan kolayca değiştirebilirsin
+env:
+  MANIFEST_URL: https://github.com/PitchBlackRecoveryProject/manifest_pb
+  MANIFEST_BRANCH: android-11.0
+  DEVICE_TREE_URL: https://github.com/ianmacd/twrp_a71.git
+  DEVICE_PATH: device/samsung/a71
+  DEVICE_NAME: a71
 
-      - name: Clone and Copy Files
-        run: |
-          git config --global user.name "crayxybui-cmd"
-          git config --global user.email "crayxybui-cmd@://github.com"
-          git clone https://github.com temp_tree
-          cp -r temp_tree/* .
-          rm -rf temp_tree
-          git add .
-          git commit -m "Import A71 device tree from pascua28"
-          git push origin main
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+    - name: 🧹 Sistem Temizliği (Maksimum Depolama Alanı Aç)
+      run: |
+        sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+        sudo docker image prune --all --force
+        sudo apt-get clean
+
+    - name: 📥 Depoyu Klonla
+      uses: actions/checkout@v4
+
+    - name: ⚙️ Derleme Ortamını Hazırla (Donma Korumalı)
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -yq bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf lib32ncurses5-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python2
+        sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        echo "$HOME/bin" >> $GITHUB_PATH
+
+    - name: 🚀 Ccache (Derleme Hızlandırıcı) Aktifleştir
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: pbrp-ccache-${{ github.sha }}
+        restore-keys: |
+          pbrp-ccache-
+
+    - name: 🔄 PBRP Kaynak Kodlarını Çek
+      run: |
+        mkdir pbrp
+        cd pbrp
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        repo init --depth=1 -u ${{ env.MANIFEST_URL }} -b ${{ env.MANIFEST_BRANCH }}
+        repo sync -c --force-sync --no-clone-bundle --no-tags -j$(nproc --all)
+
+    - name: 🌳 A71 Cihaz Ağacını Ekle
+      run: |
+        cd pbrp
+        git clone ${{ env.DEVICE_TREE_URL }} ${{ env.DEVICE_PATH }}
+
+    - name: 🛠️ Akıllı Derleme (Hata Yakalama ve Otomatik Hedef)
+      run: |
+        cd pbrp
+        export ALLOW_MISSING_DEPENDENCIES=true
+        export LC_ALL="C"
+        export USE_CCACHE=1
+        export CCACHE_EXEC=/usr/bin/ccache
+        ccache -M 50G
+        source build/envsetup.sh
+
+        echo "--- LUNCH İŞLEMİ (CİHAZ TANITIMI) BAŞLIYOR ---"
+        if [ -f ${{ env.DEVICE_PATH }}/omni_${{ env.DEVICE_NAME }}.mk ]; then
+          lunch omni_${{ env.DEVICE_NAME }}-eng | tee lunch_log.txt
+        elif [ -f ${{ env.DEVICE_PATH }}/twrp_${{ env.DEVICE_NAME }}.mk ]; then
+          lunch twrp_${{ env.DEVICE_NAME }}-eng | tee lunch_log.txt
+        else
+          echo "FATAL ERROR: Cihaz ağacında geçerli bir .mk dosyası bulunamadı!"
+          exit 1
+        fi
+        
+        make clean && make clobber
+
+        echo "--- PBRP DERLEMESİ BAŞLIYOR (mka pbrp) ---"
+        # PBRP'nin asıl derleme komutunu kullanıyoruz
+        mka pbrp -j$(nproc --all) | tee build_log.txt
+
+        # Eğer PBRP komutu hala 'no work to do' verirse, standart TWRP komutunu deniyoruz
+        if grep -q "no work to do" build_log.txt; then
+          echo "--- mka pbrp 'no work to do' verdi, mka recoveryimage deneniyor... ---"
+          mka recoveryimage -j$(nproc --all) | tee -a build_log.txt
+        fi
+
+        # Dosya üretildi mi kontrol et
+        if ls out/target/product/${{ env.DEVICE_NAME }}/PBRP*.zip 1> /dev/null 2>&1; then
+          echo "BAŞARILI: PBRP zip dosyası üretildi."
+        elif [ -f out/target/product/${{ env.DEVICE_NAME }}/recovery.img ]; then
+          echo "BAŞARILI: recovery.img dosyası üretildi."
+        else
+          echo "FATAL ERROR: Derleme tamamlandı ancak imaj dosyası bulunamadı!"
+          exit 1
+        fi
+
+    - name: 📄 Derleme Hatası Logunu Yükle (Sadece Hata Verirse Çalışır)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Build-Error-Logs
+        path: |
+          pbrp/build_log.txt
+          pbrp/lunch_log.txt
+
+    - name: 📦 Çıktıları Doğrula ve Profesyonel Paketle
+      run: |
+        mkdir -p ${GITHUB_WORKSPACE}/output
+        cd pbrp/out/target/product/${{ env.DEVICE_NAME }}/
+        
+        # Dinamik isimlendirme (Örn: PBRP-A71-Unofficial-20260919.zip)
+        DATE=$(date +%Y%m%d)
+        ZIP_NAME="PBRP-A71-Unofficial-${DATE}.zip"
+        
+        if ls PBRP*.zip 1> /dev/null 2>&1; then
+          cp PBRP*.zip ${GITHUB_WORKSPACE}/output/${ZIP_NAME}
+        elif [ -f "recovery.img" ]; then
+          zip -j ${GITHUB_WORKSPACE}/output/${ZIP_NAME} recovery.img
+        else
+          echo "Paketlenecek dosya bulunamadı!"
+          exit 1
+        fi
+        
+        # Diğer adımlar için dosya yolunu kaydet
+        echo "ZIP_PATH=${GITHUB_WORKSPACE}/output/${ZIP_NAME}" >> $GITHUB_ENV
+        echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+
+    - name: 💾 Artifact Olarak Yükle (İndirme Linki Oluştur)
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ZIP_NAME }}
+        path: ${{ env.ZIP_PATH }}
+
+    - name: 🌐 Release Olarak Yayımla
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ${{ env.ZIP_PATH }}
+        tag_name: PBRP-${{ github.run_number }}-A71
+        name: PBRP Unofficial Build - Samsung Galaxy A71
+        body: |
+          🚀 **Samsung Galaxy A71** için otomatik derlenmiş PitchBlack Recovery projesi.
+          
+          **Derleme Bilgileri:**
+          * 🌳 **Cihaz Ağacı:** ianmacd/twrp_a71
+          * 🤖 **Android Sürümü:** 11.0 
+          * ⚡ Ccache hızlandırması kullanılarak derlendi.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
