@@ -3,7 +3,6 @@ name: PBRP Recovery Build for Samsung A71
 on:
   workflow_dispatch:
 
-# Tüm ayarları buradan kolayca değiştirebilirsin
 env:
   MANIFEST_URL: https://github.com/PitchBlackRecoveryProject/manifest_pb
   MANIFEST_BRANCH: android-11.0
@@ -61,6 +60,17 @@ jobs:
         cd pbrp
         git clone ${{ env.DEVICE_TREE_URL }} ${{ env.DEVICE_PATH }}
 
+    - name: 🩹 Cihaz Ağacını Onar (TW_THEME Hatası Çözümü)
+      run: |
+        cd pbrp/${{ env.DEVICE_PATH }}
+        echo "" >> BoardConfig.mk
+        echo "# --- PBRP TEMA DÜZELTMESİ ---" >> BoardConfig.mk
+        echo "TW_THEME := portrait_hdpi" >> BoardConfig.mk
+        echo "TARGET_SCREEN_WIDTH := 1080" >> BoardConfig.mk
+        echo "TARGET_SCREEN_HEIGHT := 2400" >> BoardConfig.mk
+        echo "BoardConfig.mk dosyasına tema değişkenleri eklendi:"
+        tail -n 6 BoardConfig.mk
+
     - name: 🛠️ Akıllı Derleme (Hata Yakalama ve Otomatik Hedef)
       run: |
         cd pbrp
@@ -84,16 +94,13 @@ jobs:
         make clean && make clobber
 
         echo "--- PBRP DERLEMESİ BAŞLIYOR (mka pbrp) ---"
-        # PBRP'nin asıl derleme komutunu kullanıyoruz
         mka pbrp -j$(nproc --all) | tee build_log.txt
 
-        # Eğer PBRP komutu hala 'no work to do' verirse, standart TWRP komutunu deniyoruz
         if grep -q "no work to do" build_log.txt; then
           echo "--- mka pbrp 'no work to do' verdi, mka recoveryimage deneniyor... ---"
           mka recoveryimage -j$(nproc --all) | tee -a build_log.txt
         fi
 
-        # Dosya üretildi mi kontrol et
         if ls out/target/product/${{ env.DEVICE_NAME }}/PBRP*.zip 1> /dev/null 2>&1; then
           echo "BAŞARILI: PBRP zip dosyası üretildi."
         elif [ -f out/target/product/${{ env.DEVICE_NAME }}/recovery.img ]; then
@@ -117,7 +124,6 @@ jobs:
         mkdir -p ${GITHUB_WORKSPACE}/output
         cd pbrp/out/target/product/${{ env.DEVICE_NAME }}/
         
-        # Dinamik isimlendirme (Örn: PBRP-A71-Unofficial-20260919.zip)
         DATE=$(date +%Y%m%d)
         ZIP_NAME="PBRP-A71-Unofficial-${DATE}.zip"
         
@@ -130,7 +136,6 @@ jobs:
           exit 1
         fi
         
-        # Diğer adımlar için dosya yolunu kaydet
         echo "ZIP_PATH=${GITHUB_WORKSPACE}/output/${ZIP_NAME}" >> $GITHUB_ENV
         echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
